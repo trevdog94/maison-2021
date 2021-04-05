@@ -6,7 +6,8 @@ Microscopic Markov Chain Approach for Measuring Disease Spread
 """
 
 import numpy as np
-from math import floor
+import pandas as pd
+import datetime
 
 class mmcaCOVID:
     """
@@ -57,6 +58,7 @@ class mmcaCOVID:
         self.R_ls = R_ls 
         self.c_ls = c_ls
         self.n_vec = n_vec
+        self.patch_ids = patch_ids
 
         ## Initialize epidemiological parameters
         self.beta = epi_params['beta']
@@ -91,7 +93,7 @@ class mmcaCOVID:
 
         """
         n_I_move = n_k * rho_I_k * R_kj
-        return floor(n_I_move)
+        return n_I_move
 
     def update_Pi(self, beta, R, rho_I, c_vec, n_vec): 
         """
@@ -200,18 +202,27 @@ class mmcaCOVID:
         """
         ## Initialize number of patches 
         N = self.N
+
+        ## Initialize numpy arrays with zeros
+        rho_S = np.zeros(N)
+        rho_E = np.zeros(N)
+        rho_I = np.zeros(N)
         
         ## Update the compartment estimates for each patch
         for i in range(N):
-            self.rho_S[i] = (1 - self.Pi[i]) * self.rho_S[i]
-            self.rho_E[i] = self.Pi[i] * self.rho_S[i] + (1-self.sigma) * self.rho_E[i]
-            self.rho_I[i] = self.sigma * self.rho_E[i] + (1 - self.gamma * (1 - self.omega) - self.omega * self.delta) * self.rho_I[i]
-            self.rho_R[i] = (1 - self.omega) * self.gamma * self.rho_I[i]    
-            self.rho_D[i] = self.omega * self.delta * self.rho_I[i]
+            rho_S[i] = (1 - self.Pi[i]) * self.rho_S[i]
+            rho_E[i] = self.Pi[i] * self.rho_S[i] + (1-self.sigma) * self.rho_E[i]
+            rho_I[i] = self.sigma * self.rho_E[i] + (1 - self.gamma * (1 - self.omega) - self.omega * self.delta) * self.rho_I[i]
+            self.rho_R[i] += (1 - self.omega) * self.gamma * self.rho_I[i]    
+            self.rho_D[i] += self.omega * self.delta * self.rho_I[i]
+        
+        self.rho_S = rho_S
+        self.rho_E = rho_E
+        self.rho_I = rho_I
 
         return self.rho_S, self.rho_E, self.rho_I, self.rho_R, self.rho_D
     
-    def set_seed(self, E_0, I_0):
+    def set_seed(self, E_0, I_0, start_date):
         """
         Sets the initial fractions that exist in each compartment so that the Markov process can be kicked off
 
@@ -230,9 +241,18 @@ class mmcaCOVID:
 
 
         """
-        ## Initialize demographic parameters
+        ## Initialize model parameters
+        tau = self.tau
         N = self.N
+        c_ls = self.c_ls
         n_vec = self.n_vec
+        beta = self.beta
+        R_ls = self.R_ls
+        n_vec = self.n_vec
+
+        ## Grab the initial mobility matrix and contact vectors
+        R = R_ls[0]
+        c_vec = c_ls[0]
 
         ## Initialize numpy arrays with zeros
         rho_S = np.zeros(N)
@@ -253,6 +273,27 @@ class mmcaCOVID:
         self.rho_I = rho_I
         self.rho_R = rho_R
         self.rho_D = rho_D
+
+        ## Estimate the initial probability of infection
+        self.update_Pi(beta, R, rho_I, c_vec, n_vec)
+
+        ## Initialize the output dataframe
+        out_df = pd.DataFrame()
+        start_date = pd.to_datetime(start_date)
+        self.start_date = start_date
+        date = np.repeat(start_date, N, axis=0)
+
+        out_df.loc[:, 'date'] = date
+        out_df.loc[:, 'patch_id'] = self.patch_ids
+        out_df.loc[:, 'rho_S'] = self.rho_S
+        out_df.loc[:, 'rho_E'] = self.rho_E
+        out_df.loc[:, 'rho_I'] = self.rho_I
+        out_df.loc[:, 'rho_R'] = self.rho_R
+        out_df.loc[:, 'rho_D'] = self.rho_D
+        out_df.loc[:, 'Pi'] = self.Pi
+        out_df.loc[:, 'n_eff'] = self.n_eff
+
+        self.out_df = out_df
 
         return None
 
@@ -293,27 +334,19 @@ class mmcaCOVID:
             # Retrieve current average contacts vector
             c_vec = c_ls[t]
 
-            # Update the probability of infection
-            self.update_Pi(beta, R, rho_I, c_vec, n_vec)
-
             # Update the next days compartment counts
             self.compartment_evolution()
 
+            # Update the probability of infection
+            self.update_Pi(beta, R, rho_I, c_vec, n_vec)
+
             # Update the output dataframe
-            self.update_output()
+            self.update_output(t)
 
             print("Timestep t: %s"%(t))
-            print("####################")
-            print("Pi: %s"%(self.Pi))
-            print("rho_S: %s"%(self.rho_S))
-            print("rho_E: %s"%(self.rho_E))
-            print("rho_I: %s"%(self.rho_I))
-            print("rho_R: %s"%(self.rho_R))
-            print("rho_D: %s"%(self.rho_D))
-            print("n_eff: %s"%(self.n_eff))
 
 
-    def update_output(self):
+    def update_output(self, t):
         """
         Updates the output dataframe with all parameters from the current model step.
 
@@ -321,7 +354,25 @@ class mmcaCOVID:
         ----------
         
         """
-        
+        N = self.N
+
+        today = self.start_date + datetime.timedelta(t)
+        today_df = pd.DataFrame()
+
+        date = np.repeat(today, N, axis=0)
+
+        today_df.loc[:, 'date'] = date
+        today_df.loc[:, 'patch_id'] = self.patch_ids
+        today_df.loc[:, 'rho_S'] = self.rho_S
+        today_df.loc[:, 'rho_E'] = self.rho_E
+        today_df.loc[:, 'rho_I'] = self.rho_I
+        today_df.loc[:, 'rho_R'] = self.rho_R
+        today_df.loc[:, 'rho_D'] = self.rho_D
+        today_df.loc[:, 'Pi'] = self.Pi
+        today_df.loc[:, 'n_eff'] = self.n_eff
+
+        self.out_df = pd.concat([self.out_df, today_df])
+
         return None
 
     # def fit_model(fixed_params = []):
