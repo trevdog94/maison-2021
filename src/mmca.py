@@ -205,9 +205,9 @@ class mmcaCOVID:
         for i in range(N):
             self.rho_S[i] = (1 - self.Pi[i]) * self.rho_S[i]
             self.rho_E[i] = self.Pi[i] * self.rho_S[i] + (1-self.sigma) * self.rho_E[i]
-            self.rho_I[i] = self.sigma * self.rho_E[i] + (1 - self.gamma * (1 - self.omega) - self.omega * self.delta)
+            self.rho_I[i] = self.sigma * self.rho_E[i] + (1 - self.gamma * (1 - self.omega) - self.omega * self.delta) * self.rho_I[i]
             self.rho_R[i] = (1 - self.omega) * self.gamma * self.rho_I[i]    
-            self.rho_D[i] = (1 - self.omega * self.delta * self.rho_I[i])
+            self.rho_D[i] = self.omega * self.delta * self.rho_I[i]
 
         return self.rho_S, self.rho_E, self.rho_I, self.rho_R, self.rho_D
     
@@ -241,9 +241,10 @@ class mmcaCOVID:
         rho_R = np.zeros(N)
         rho_D = np.zeros(N)
         
-        ## Update S, E, and I compartments to aggree with infectious seeds
+        ## Update S, E, and I compartments to agree with infectious seeds
         for i in range(N):
             rho_E[i] = E_0[i] / n_vec[i]
+            rho_I[i] = I_0[i] / n_vec[i]
             rho_S[i] = 1 - (rho_E[i] + rho_I[i])
 
         ## Update the initial conditions
@@ -269,7 +270,7 @@ class mmcaCOVID:
         -------
         
         """
-        ## Ensure Infectious seeds have been set
+        ## Ensure infectious seeds have been set
         assert hasattr(self, 'rho_I'), "You must set the infectious seeds before running the model. Maybe try: mmca.set_seed(E_0, I_0)"
 
         ## Initialize model parameters
@@ -301,8 +302,16 @@ class mmcaCOVID:
             # Update the output dataframe
             self.update_output()
 
+            print("Timestep t: %s"%(t))
+            print("####################")
+            print("Pi: %s"%(self.Pi))
+            print("rho_S: %s"%(self.rho_S))
+            print("rho_E: %s"%(self.rho_E))
+            print("rho_I: %s"%(self.rho_I))
+            print("rho_R: %s"%(self.rho_R))
+            print("rho_D: %s"%(self.rho_D))
+            print("n_eff: %s"%(self.n_eff))
 
-        # for tau in range(1, timesteps):
 
     def update_output(self):
         """
