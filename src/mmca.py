@@ -6,7 +6,7 @@ Microscopic Markov Chain Approach for Measuring Disease Spread
 """
 
 import numpy as np
-import math
+from math import floor
 
 class mmcaCOVID:
     """
@@ -17,7 +17,7 @@ class mmcaCOVID:
 
     """
 
-    def __init__(self, R_ls = [np.random.rand(2,2)], epi_params = {'beta': 0.06, 'sigma': 1/5.1, 'gamma':1/21, 'omega':0.013, 'delta': 1/17.8}, I_0 = np.array([[1, 0]]), c_ls = [10 * np.random.rand(1, 2)], n_vec = np.array([[100, 100]])):
+    def __init__(self, R_ls = [np.random.rand(2,2)], epi_params = {'beta': 0.06, 'sigma': 1/5.1, 'gamma':1/21, 'omega':0.013, 'delta': 1/17.8}, c_ls = [10 * np.random.rand(1, 2)], n_vec = np.array([[100, 100]]), patch_ids = list(range(2))):
         """
 
         Parameters
@@ -29,10 +29,6 @@ class mmcaCOVID:
         epi_params : (dict)
 
             A dictionary of the epidemiological parameters of the model.
-        
-        I_0 : (np.array)
-
-            An array 1 x N array of the initial infectious seeds for each patch in the model.
 
         c_ls : (list)
 
@@ -42,21 +38,25 @@ class mmcaCOVID:
 
             A 1 x N array where each element of the array represents the population size within a given patch.
         
-        """
+        patch_ids : (list)
 
-        ## Check for valid inputs
-        assert len(R_ls) == c_ls, "The temporal extent of mobility matrices must match that of average contacts."
-        
+            A list of patch id's for each patch in the multi-patch
+        """
         ## Initialze number of patches
-        self.N = len(initials)
+        self.N = len(n_vec)
 
         ## Initialize the fitting period
-        self.timesteps = len(R_ls) 
+        self.tau = len(R_ls) 
 
+        ## Check for valid inputs
+        assert len(R_ls) == self.tau, "The temporal extent of mobility matrices must match that of average contacts."
+        assert len(R_ls[0]) == self.N, "The dimensions of the mobility matrices do not match that of the population size array."
+        assert len(c_ls[0]) == self.N, "The dimensions of the average contact arrays do not match that of the population size array."
+        
         ## Initialize demographic parameters
-        self.M_ls = M_ls 
+        self.R_ls = R_ls 
         self.c_ls = c_ls
-        self.n_ls = n_ls
+        self.n_vec = n_vec
 
         ## Initialize epidemiological parameters
         self.beta = epi_params['beta']
@@ -65,7 +65,7 @@ class mmcaCOVID:
         self.omega = epi_params['omega']
         self.delta = epi_params['delta']
 
-    def moving_population(R_kj, rho_I_k, n_k):
+    def moving_population(self, R_kj, rho_I_k, n_k):
         """
         Calculate the number of infected individuals moving from one patch to the next for a snapshot in time.
 
@@ -90,10 +90,10 @@ class mmcaCOVID:
             Number of infected individuals from patch k who move to region j
 
         """
-        n_I_move = n_k * rho_I * R_kj
+        n_I_move = n_k * rho_I_k * R_kj
         return floor(n_I_move)
 
-    def update_Pi(self, beta, R, rho_I, c_vec, n_vec, patch_ids): 
+    def update_Pi(self, beta, R, rho_I, c_vec, n_vec): 
         """
 
         Update the probability of infection in each patch according to the following formula:
@@ -124,10 +124,6 @@ class mmcaCOVID:
         n_vec : (np.array)
 
             An array where each element of the array represents the population size within a given patch
-        
-        patch_ids : (list)
-
-            A list of patch id's for each patch in the multi-patch
 
         Returns
         -------
@@ -157,12 +153,12 @@ class mmcaCOVID:
 
                 ## Sum over all infectious populations traveling from patch k to patch j
                 for k in range(N):
-                    n_kj_sum += moving_population(R[k,j], rho_I[k], n_vec[k])
+                    n_kj_sum += self.moving_population(R[k,j], rho_I[k], n_vec[k])
                     n_j_eff += n_vec[k] * R[k, j]
                 # End for k
 
                 ## Exponent for the probability of infection (Pi)
-                exponent = (c_vec[i], * n_kj_sum / n_j_eff)
+                exponent = (c_vec[i] * n_kj_sum / n_j_eff)
                 Pi[i] += (R[i,j] * (1-pow((1-beta), exponent)))
                 n_eff[j] = n_j_eff
             # End for j
@@ -171,15 +167,10 @@ class mmcaCOVID:
         ## Update the probability of infection
         self.Pi = Pi
 
-        ## Return a dataframe of Pi for each patch
-        df = pd.DataFrame()
-        
-        if patch_ids is not None:
-            df['patch_id'] = patch_ids
-        # End if
-        df['Pi'] = Pi
-        df['n_eff'] = n_eff
-        return df
+        ## Update the effective population
+        self.n_eff = n_eff
+
+        return Pi, n_eff
 
     def compartment_evolution(self):
         """
@@ -207,6 +198,9 @@ class mmcaCOVID:
        
         
         """
+        ## Initialize number of patches 
+        N = self.N
+        
         ## Update the compartment estimates for each patch
         for i in range(N):
             self.rho_S[i] = (1 - self.Pi[i]) * self.rho_S[i]
@@ -216,37 +210,110 @@ class mmcaCOVID:
             self.rho_D[i] = (1 - self.omega * self.delta * self.rho_I[i])
 
         return self.rho_S, self.rho_E, self.rho_I, self.rho_R, self.rho_D
-        
-    def run_epidemic_spreading(self, E_0, I_0, R_ls, beta, c_ls, n_vec, sigma, gamma, delta, omega):
+    
+    def set_seed(self, E_0, I_0):
         """
-        Kicks off the MMCA model where each day the probability of infection is updated according to a Markov
-        process which in turn governs the transition from susceptible individuals into the pre-infectious stage.
+        Sets the initial fractions that exist in each compartment so that the Markov process can be kicked off
 
         Parameters
         ----------
         E_0 : (np.array)
 
-            The initial pre-infectious seeds
+            An array 1 x N array of the initial pre-infectious seeds for each patch in the model.
 
         I_0 : (np.array)
 
-            The initial infectious seeds
-
-        R_ls : (list)
-
-            A list of N x N mobility matrices that each represent a snapshot of the mobility distributions for each day in the fitting period and N represents the number of regions in the model.
-
-        beta : 
-
+            An array 1 x N array of the initial infectious seeds for each patch in the model.
+        
+        Returns
+        -------
 
 
         """
-        timesteps = self.timesteps
+        ## Initialize demographic parameters
+        N = self.N
+        n_vec = self.n_vec
+
+        ## Initialize numpy arrays with zeros
+        rho_S = np.zeros(N)
+        rho_E = np.zeros(N)
+        rho_I = np.zeros(N)
+        rho_R = np.zeros(N)
+        rho_D = np.zeros(N)
+        
+        ## Update S, E, and I compartments to aggree with infectious seeds
+        for i in range(N):
+            rho_E[i] = E_0[i] / n_vec[i]
+            rho_S[i] = 1 - (rho_E[i] + rho_I[i])
+
+        ## Update the initial conditions
+        self.rho_S = rho_S
+        self.rho_E = rho_E
+        self.rho_I = rho_I
+        self.rho_R = rho_R
+        self.rho_D = rho_D
+
+        return None
+
+
+    def run_epidemic_spreading(self):
+        """
+
+        Kicks off the MMCA model where each day the probability of infection is updated according to a Markov
+        process which in turn governs the transition from susceptible individuals into the pre-infectious stage.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        
+        """
+        ## Ensure Infectious seeds have been set
+        assert hasattr(self, 'rho_I'), "You must set the infectious seeds before running the model. Maybe try: mmca.set_seed(E_0, I_0)"
+
+        ## Initialize model parameters
+        tau = self.tau
+        N = self.N
+        c_ls = self.c_ls
+        n_vec = self.n_vec
+        beta = self.beta
+        R_ls = self.R_ls
+        n_vec = self.n_vec
+
+        ## Step through the model
+        for t in range(tau):
+            # Retrieve current infectious fraction of the population
+            rho_I = self.rho_I
+            
+            # Retrieve current mobility matrix
+            R = R_ls[t]
+
+            # Retrieve current average contacts vector
+            c_vec = c_ls[t]
+
+            # Update the probability of infection
+            self.update_Pi(beta, R, rho_I, c_vec, n_vec)
+
+            # Update the next days compartment counts
+            self.compartment_evolution()
+
+            # Update the output dataframe
+            self.update_output()
+
 
         # for tau in range(1, timesteps):
 
-    # def fit_model(fixed_params = []):
-    #     return None
+    def update_output(self):
+        """
+        Updates the output dataframe with all parameters from the current model step.
 
-    # def update_output(self):
+        Parameters
+        ----------
+        
+        """
+        
+        return None
+
+    # def fit_model(fixed_params = []):
     #     return None
